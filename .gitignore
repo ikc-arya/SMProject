@@ -8,3 +8,5 @@ data/raw/video/Muppets-03-04-03.avi
 
 data/processed/video/Muppets-02-01-01/train/*
 data/processed/video/Muppets-02-01-01/test/*
+
+env_muppets/
