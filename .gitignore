@@ -1,20 +1,14 @@
 SIM12 Ground Truth.zip
 muppets-gt-2025wt.zip
 
-data/raw/video/Muppets-02-01-01.avi
-data/raw/video/Muppets-02-01-01-frames/*.jpg
-data/processed/video/Muppets-02-01-01/train/*
-data/processed/video/Muppets-02-01-01/test/*
+data/raw/Muppets-02-01-01.avi
+data/processed/video/Muppets-02-01-01-frames/*.jpg
 
-data/raw/video/Muppets-02-04-04.avi
-data/raw/video/Muppets-02-04-04-frames/*.jpg
-data/processed/video/Muppets-02-04-04/train/*
-data/processed/video/Muppets-02-04-04/test/*
+data/raw/Muppets-02-04-04.avi
+data/processed/video/Muppets-02-04-04-frames/*.jpg
 
-data/raw/video/Muppets-03-04-03.avi
-data/raw/video/Muppets-03-04-03-frames/*.jpg
-data/processed/video/Muppets-03-04-03/train/*
-data/processed/video/Muppets-03-04-03/test/*
+data/raw/Muppets-03-04-03.avi
+data/processed/video/Muppets-03-04-03-frames/*.jpg
 
 env_muppets/
 
