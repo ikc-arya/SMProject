@@ -2,7 +2,11 @@ import os
 import shutil
 
 import cv2
-
+from colorthief import ColorThief
+import colorsys
+import csv
+import pandas as pd
+import numpy as np
 
 def parse_timestamp(ts):
     parts = ts.split(":")
@@ -18,72 +22,60 @@ def parse_timestamp(ts):
     
     return h * 3600 + m * 60 + s
 
-
 #----------------------------------------------
 # Load episode and do EDA
 #----------------------------------------------
-def video_info(video_file):
-    ''' 
-    do some EDA, extract basic frame features about the episode
-    '''
-    if not os.path.exists(video_file):
-        raise FileNotFoundError(video_file)
+def video_info(video_path):
+    """
+    Return basic video metadata.
+    """
+    if not os.path.exists(video_path):
+        raise FileNotFoundError(video_path)
 
-    vid = cv2.VideoCapture(video_file)
+    vid = cv2.VideoCapture(video_path)
     if not vid.isOpened():
-        raise RuntimeError("Cannot open video")
+        raise RuntimeError(f"Cannot open video: {video_path}")
 
     fps = vid.get(cv2.CAP_PROP_FPS)
-    w   = vid.get(cv2.CAP_PROP_FRAME_WIDTH)
-    h   = vid.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    n   = vid.get(cv2.CAP_PROP_FRAME_COUNT)
-    fourcc = int(vid.get(cv2.CAP_PROP_FOURCC))
-
-    # ok = False
-    # for _ in range(5):
-    #     ret, frame = vid.read()
-    #     if ret and frame is not None:
-    #         ok = True
-    #         break
-
-    # if not ok:
-    #     raise RuntimeError("Unable to decode frames")
-
-    ret, frame = vid.read()
-    if not ret or frame is None:
-        raise RuntimeError("Cannot decode frames")
+    width = int(vid.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frame_count = int(vid.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = frame_count / fps if fps > 0 else None
 
     vid.release()
 
     return {
         "fps": fps,
-        "width": int(w),
-        "height": int(h),
-        "num_frames": int(n),
-        "fourcc": fourcc,
-        "duration_sec": n / fps if fps else None,
+        "width": width,
+        "height": height,
+        "frame_count": frame_count,
+        "duration": duration
     }
 
+
 #----------------------------------------------
-# Extract frames and their metadata:
-# -> what are the indices of frames
-# -> whare is the intro part etc.
+# Extract frames from video
 #----------------------------------------------
-def extract_frames(video_file, fps_to_save):
+def extract_frames(video_file, episode_name, fps_to_save=25):
     """
-    Save frames from video at fps_to_save.
-    Returns: output frames dir and number of frames saved.
+    Extract frames and store them in:
+    ../data/processed/video/{episode_name}-frames/
+
+    Returns:
+        frames_dir, num_saved, video_info_dict
     """
+    if fps_to_save <= 0:
+        raise ValueError("fps_to_save must be > 0")
+
     vid = cv2.VideoCapture(video_file)
     if not vid.isOpened():
         raise RuntimeError(f"Cannot open video: {video_file}")
 
     orig_fps = vid.get(cv2.CAP_PROP_FPS)
-    frame_step = max(int(orig_fps // fps_to_save), 1)  # save every Nth frame
+    frame_step = max(int(orig_fps // fps_to_save), 1)
 
-    base,_ = os.path.splitext(video_file)
-    out_dir = base + "-frames"
-    os.makedirs(out_dir, exist_ok=True)
+    frames_dir = f"../data/processed/video/{episode_name}-frames"
+    os.makedirs(frames_dir, exist_ok=True)
 
     fid = saved = 0
     while True:
@@ -92,182 +84,243 @@ def extract_frames(video_file, fps_to_save):
             break
 
         if fid % frame_step == 0:
-            cv2.imwrite(os.path.join(out_dir, f"frame{saved}.jpg"), frame)
+            cv2.imwrite(
+                os.path.join(frames_dir, f"frame{saved}.jpg"),
+                frame
+            )
             saved += 1
 
         fid += 1
 
-    vid.release()
-    print(f"[frames ok] saved={saved} frames in {out_dir}")
-    return out_dir, saved
-
-def extract_frames_meta(video_file, intro_timestamp=0, fps_to_save=8):
-    """
-    Returns: list of (saved_index, filename), frames_dir, video_info
-    """
-    intro_skip_sec = parse_timestamp(intro_timestamp) if isinstance(intro_timestamp, str) else intro_timestamp
+    vid.release() 
 
     info = video_info(video_file)
-    frames_dir = os.path.splitext(video_file)[0] + "-frames"
-    os.makedirs(frames_dir, exist_ok=True)
 
-    frames = []
-    for f in os.listdir(frames_dir):
-        if f.lower().endswith(".jpg"):
-            num = int(f[5:-4])
-            frames.append((num, f))
-
-    frames.sort(key=lambda x: x[0])
-
-    # skip intro frames if FPS provided
-    if fps_to_save:
-        discard_count = int(intro_skip_sec * fps_to_save)
-        discard_count = min(discard_count, len(frames))
-        frames = frames[discard_count:]
-
-    return frames, frames_dir, info
-
-
-
-
-#----------------------------------------------
-# Split frames for modeling
-#----------------------------------------------
-def split_frames(frames, video_file, split_timestamp, fps_to_save):
-    """
-    Split frames into train/test based on split_timestamp.
-    Uses the sorted frames list; everything before the split → train,
-    everything after → test. Does not compute FPS-based indices.
-    """
-    split_sec = parse_timestamp(split_timestamp) if isinstance(split_timestamp, str) else split_timestamp
-
-    # Compute the frame index corresponding to the split time
-    split_index = int(split_sec * fps_to_save)
-    split_index = min(split_index, len(frames))  # avoid overflow
-
-    train_frames = frames[:split_index]
-    test_frames  = frames[split_index:]
-
-    episode_name = os.path.splitext(os.path.basename(video_file))[0]
-    frames_dir = os.path.splitext(video_file)[0] + "-frames"
-
-    train_out = f"../data/processed/video/{episode_name}/train/"
-    test_out  = f"../data/processed/video/{episode_name}/test/"
-    os.makedirs(train_out, exist_ok=True)
-    os.makedirs(test_out, exist_ok=True)
-
-    for _, fname in train_frames:
-        shutil.copy(os.path.join(frames_dir, fname), os.path.join(train_out, fname))
-    for _, fname in test_frames:
-        shutil.copy(os.path.join(frames_dir, fname), os.path.join(test_out, fname))
-
-    print(f"[YoHoo! split done :>] saved frames: train={len(train_frames)}, test={len(test_frames)}")
-    return train_frames, test_frames
+    print(f"[frames ok] saved={saved} frames in {frames_dir}")
+    return frames_dir, saved, info
     
 
-#------------- doing for 'Kermit' only here ----------------#
+#----------------------------------------------
+# Ssanity check for no of frames with gt dimensions
+#----------------------------------------------
 
-#------------------------------------------------
-# DOMIANANT COLOR
-#------------------------------------------------
+def sanity_check_frames_vs_gt(frame_dir, gt_path):
+    """
+    Check that number of extracted frames == number of GT rows in xlsx
+    """
+    frame_files = [
+        f for f in os.listdir(frame_dir)
+        if f.lower().endswith(".jpg")
+    ]
+    n_frames = len(frame_files)
+
+    gt_df = pd.read_excel(gt_path)
+    n_gt = len(gt_df)-1
+
+    if n_frames != n_gt:
+        print(f"[WARNING] Frame count mismatch!")
+        print(f"Extracted frames: {n_frames}, GT rows: {n_gt}")
+    else:
+        print(f"[OK] Frames match GT ({n_gt} rows)")
+
+
+
+#---------------*******************--------------------
+# VISUAL FEATURE EXTRACTION - fir SIM1
+#---------------*******************--------------------
 def rgb_to_hsv(rgb):
     r, g, b = rgb
     h, s, v = colorsys.rgb_to_hsv(r/255, g/255, b/255)
     return int(h*179), int(s*255), int(v*255)
 
-def dominant_color_feature(frames_dir, episode_name, frame_files=None):
-    out_dir = f"../data/processed/video/{episode_name}/features/"
-    os.makedirs(out_dir, exist_ok=True)
+# def feat_dominant_color(frame_path):
+#     rgb = ColorThief(frame_path).get_color(quality=1)
+#     h, s, v = rgb_to_hsv(rgb)
+#     return {"dom_H": h, "dom_S": s, "dom_V": v}
 
-    set_name = os.path.basename(os.path.normpath(frames_dir))  # train/test
-    csv_path = os.path.join(out_dir, f"dominant_color_{set_name}.csv")
-
-    if frame_files is None:
-        frame_files = sorted([f for f in os.listdir(frames_dir) if f.lower().endswith(".jpg")],
-                             key=lambda x: int(x[5:-4]))
-        frame_files = [os.path.join(frames_dir, f) for f in frame_files]
-    else:
-        frame_files = [f if os.path.isabs(f) else os.path.join(frames_dir, f) for f in frame_files]
-
-    data = []
-    for frame_path in frame_files:
-        rgb = ColorThief(frame_path).get_color(quality=1)
-        h, s, v = rgb_to_hsv(rgb)
-        data.append({'frame': os.path.basename(frame_path), 'H': h, 'S': s, 'V': v})
-
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=['frame','H','S','V'])
-        writer.writeheader()
-        writer.writerows(data)
-
-    print(f"[Dominant color] saved {len(data)} frames -> {csv_path}")
-    return data, csv_path
+def dominant_color(frame_info, dry_run=False):
+    if dry_run:
+        return {"dom_H": None, "dom_S": None, "dom_V": None}
+        
+    img = frame_info["img"]
+    small = cv2.resize(img, (32, 32), interpolation=cv2.INTER_AREA)
+    mean_bgr = small.mean(axis=(0, 1))
+    mean_rgb = mean_bgr[::-1]
+    h, s, v = rgb_to_hsv(mean_rgb)
+    return {"dom_H": h, "dom_S": s, "dom_V": v}
 
 
-
-#------------------------------------------------
-# MASK EVERY OTHER COLOR EXCEPT KERMIT'S DISTINCT  GREEN
-#------------------------------------------------
-def green_mask_feature(frames_dir, episode_name, frame_files=None):
-    out_dir = f"../data/processed/video/{episode_name}/features/"
-    os.makedirs(out_dir, exist_ok=True)
-
-    set_name = os.path.basename(os.path.normpath(frames_dir))
-    csv_path = os.path.join(out_dir, f"green_mask_{set_name}.csv")
-
-    if frame_files is None:
-        frame_files = sorted([f for f in os.listdir(frames_dir) if f.lower().endswith(".jpg")],
-                             key=lambda x: int(x[5:-4]))
-        frame_files = [os.path.join(frames_dir, f) for f in frame_files]
-    else:
-        frame_files = [f if os.path.isabs(f) else os.path.join(frames_dir, f) for f in frame_files]
-
-    data = []
-    for frame_path in frame_files:
-        img = cv2.imread(frame_path)
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        # mask green pixels (Hue ~35-85)
-        mask = (hsv[:,:,0] >= 35) & (hsv[:,:,0] <= 85) & (hsv[:,:,1] > 50) & (hsv[:,:,2] > 50)
-        green_fraction = mask.sum() / mask.size
-        data.append({'frame': os.path.basename(frame_path), 'green_frac': green_fraction})
-
-    with open(csv_path, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['frame','green_frac'])
-        writer.writeheader()
-        writer.writerows(data)
-
-    print(f"[Green mask] saved {len(data)} frames -> {csv_path}")
-    return data, csv_path
+def green_fraction(frame_info, dry_run=False):
+    if dry_run:
+        return {"green_frac": None}
+    hsv = frame_info["hsv"]
+    mask = (
+        (hsv[:, :, 0] >= 35) & (hsv[:, :, 0] <= 85) &
+        (hsv[:, :, 1] > 50) &
+        (hsv[:, :, 2] > 50)
+    )
+    return {"green_frac": mask.mean()}
 
 
-#------------------------------------------------
-# SEPARATE KERMIT FROM BACKGROUND
-#------------------------------------------------
-def edge_magnitude_feature(frames_dir, episode_name, frame_files=None):
-    out_dir = f"../data/processed/video/{episode_name}/features/"
-    os.makedirs(out_dir, exist_ok=True)
+def edge_mean(frame_info, dry_run=False):
+    if dry_run:
+        return {"edge_mean": None}
+    edges = cv2.Canny(frame_info["gray"], 100, 200)
+    return {"edge_mean": edges.mean()}
 
-    set_name = os.path.basename(os.path.normpath(frames_dir))
-    csv_path = os.path.join(out_dir, f"edge_magnitude_{set_name}.csv")
 
-    if frame_files is None:
-        frame_files = sorted([f for f in os.listdir(frames_dir) if f.lower().endswith(".jpg")],
-                             key=lambda x: int(x[5:-4]))
-        frame_files = [os.path.join(frames_dir, f) for f in frame_files]
-    else:
-        frame_files = [f if os.path.isabs(f) else os.path.join(frames_dir, f) for f in frame_files]
+def frog_eye_pattern(frame_info, dry_run=False):
+    if dry_run:
+        return {
+            "eye_blob_count": None,
+            "eye_horizontal_align": None
+        }
 
-    data = []
-    for frame_path in frame_files:
-        img = cv2.imread(frame_path, cv2.IMREAD_GRAYSCALE)
-        edges = cv2.Canny(img, 100, 200)
-        mean_edge = edges.mean()
-        data.append({'frame': os.path.basename(frame_path), 'mean_edge': mean_edge})
+    hsv = frame_info["hsv"]
 
-    with open(csv_path, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['frame','mean_edge'])
-        writer.writeheader()
-        writer.writerows(data)
+    # green region
+    green_mask = (
+        (hsv[:, :, 0] >= 35) & (hsv[:, :, 0] <= 85) &
+        (hsv[:, :, 1] > 50)
+    )
 
-    print(f"[Edge magnitude] saved {len(data)} frames -> {csv_path}")
-    return data, csv_path
+    # white regions inside green (eyes)
+    v = hsv[:, :, 2]
+    white = (v > 200) & green_mask
+    white = white.astype("uint8") * 255
+
+    contours, _ = cv2.findContours(
+        white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    valid = []
+    centers = []
+
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < 20:
+            continue
+        valid.append(c)
+        M = cv2.moments(c)
+        if M["m00"] != 0:
+            centers.append((M["m10"] / M["m00"], M["m01"] / M["m00"]))
+
+    # horizontal alignment score (Kermit eyes)
+    horiz_align = 0.0
+    if len(centers) >= 2:
+        ys = [c[1] for c in centers]
+        horiz_align = 1 / (1 + np.std(ys))
+
+    return {
+        "eye_blob_count": len(valid),
+        "eye_horizontal_align": horiz_align
+    }
+
+
+def brown_rhythm(frame_info, dry_run=False, patch_size=16, max_lag=10):
+    """
+    Rhythm detection of brown patches in the frame.
+    Returns mean autocorrelation across lags.
+    """
+    if dry_run:
+        return {"brown_rhythm": None}
+
+    hsv = frame_info["hsv"]
+
+    # Brown mask
+    mask = (
+        (hsv[:, :, 0] >= 10) & (hsv[:, :, 0] <= 25) &
+        (hsv[:, :, 1] > 50) &
+        (hsv[:, :, 2] > 50)
+    ).astype(np.uint8)
+
+    h, w = mask.shape
+    n_h = h // patch_size
+    n_w = w // patch_size
+
+    # Sum brown pixels per patch (row-wise)
+    patch_sums = []
+    for i in range(n_h):
+        for j in range(n_w):
+            patch = mask[i*patch_size:(i+1)*patch_size,
+                         j*patch_size:(j+1)*patch_size]
+            patch_sums.append(patch.sum())
+
+    patch_sums = np.array(patch_sums)
+    patch_sums = patch_sums - patch_sums.mean()
+
+    # Autocorrelation for lags 1..max_lag
+    acorrs = []
+    for k in range(1, min(max_lag, len(patch_sums))):
+        ac = np.mean(patch_sums[:-k] * patch_sums[k:])
+        acorrs.append(ac)
+
+    rhythm_score = np.mean(acorrs) if acorrs else 0.0
+    return {"brown_rhythm": rhythm_score}
+
+VISUAL_FEATURES = {
+    "dominant_color": dominant_color,
+    "green_mask": green_fraction,
+    "edge_magnitude": edge_mean,
+    "frog_eye": frog_eye_pattern,
+    "brown_rhythm": brown_rhythm,
+}
+
+#-------*******---------
+# Note fot @ibembem:
+# Update the VISUAL_FEATURE dictionary after adding new mwthods.
+# Do not change the extract_visual_features_for_frame() function.
+#-------*******---------
+
+
+#---------------*******************--------------------
+# VISUAL FEATURE EXTRACTION - for SIM2
+#---------------*******************--------------------
+
+def feat_optical_flow(prev_gray, curr_gray):
+    flow = cv2.calcOpticalFlowFarneback(
+        prev_gray, curr_gray,
+        None, 0.5, 3, 15, 3, 5, 1.2, 0
+    )
+
+    mag, ang = cv2.cartToPolar(flow[...,0], flow[...,1])
+
+    return {
+        "flow_mag_mean": mag.mean(),
+        "flow_mag_std": mag.std(),
+        "flow_horiz_ratio": (np.abs(flow[...,0]).mean() /
+                             (np.abs(flow[...,1]).mean() + 1e-6))
+    }
+
+
+
+
+
+# to execute all feature functions and create feature space
+
+def extract_visual_features_for_frame(frame_path, feature_list):
+    """
+    Extract selected visual features for a single frame.
+    Returns: dict {feature_name: value}
+    """
+    fname = os.path.basename(frame_path)
+    out = {"frame": fname}
+
+    if not os.path.exists(frame_path):
+        raise FileNotFoundError(f"Missing frame: {frame_path}")
+
+    img = cv2.imread(frame_path)
+    if img is None:
+        raise ValueError(f"Could not read frame: {frame_path}")
+
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    frame_data = {"img": img, "hsv": hsv, "gray": gray}
+
+    for feat_name in feature_list:
+        if feat_name not in VISUAL_FEATURES:
+            raise ValueError(f"Unknown feature: {feat_name}")
+        feat_vals = VISUAL_FEATURES[feat_name](frame_data)
+        out.update(feat_vals)
+
+    return out
