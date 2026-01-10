@@ -23,14 +23,12 @@ def evaluate_multiclass(
     """
     metrics_dict = {}
 
-    # -----------------------------
     # For overlay plots
-    # -----------------------------
     fig_pr_comb = go.Figure()
     fig_roc_comb = go.Figure()
 
     # -----------------------------
-    # Confusion matrix subplot figure
+    # Confusion matrix
     # -----------------------------
     n_chars = len(characters)
     fig_cm = make_subplots(
@@ -43,9 +41,9 @@ def evaluate_multiclass(
         y_true = y_true_df[char].values
         y_pred = y_pred_df[f"{char}_present"].values
 
-        # ---- Confusion matrix ----
         cm = confusion_matrix(y_true, y_pred)
         cm_text = np.array([[f"{v}" for v in row] for row in cm])
+
         fig_cm.add_trace(
             go.Heatmap(
                 z=cm,
@@ -54,10 +52,13 @@ def evaluate_multiclass(
                 text=cm_text,
                 texttemplate="%{text}",
                 colorscale="Blues",
-                showscale=False
+                showscale=False,
             ),
             row=1, col=i
         )
+
+        # Rotate y-axis labels to vertical
+        fig_cm.update_yaxes(tickangle=270, row=1, col=i)
 
         # ---- PR / ROC overlay prep ----
         precision, recall, _ = precision_recall_curve(y_true, y_pred)
@@ -77,7 +78,7 @@ def evaluate_multiclass(
     # -----------------------------
     fig_cm.update_layout(
         title_text="Confusion Matrices per Character",
-        width=400*n_chars,
+        width=800,
         height=400,
         showlegend=False
     )
@@ -96,7 +97,7 @@ def evaluate_multiclass(
     fig_pr_comb.show()
 
     # -----------------------------
-    # Overlay ROC with diagonal
+    # Overlay ROC
     # -----------------------------
     fig_roc_comb.add_trace(
         go.Scatter(x=[0,1], y=[0,1], mode="lines", line=dict(dash="dash"), name = 'Random')

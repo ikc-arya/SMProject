@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 import numpy as np
+from tqdm import tqdm
 from datetime import time, datetime
 
 from utils import visual_tools as visualTools
@@ -71,49 +72,45 @@ def build_feature_space_df(
     gt_df,
     characters,
     video_name_to_gt,
-    frames_base_dir="../data/processed/video"
+    frames_base_dir="../data/processed/video",
+    out_path="../data/processed/feature_spaces/visual_sim1.csv"
 ):
     """
-    Build feature-space DF for all episodes and all frames listed in all_ep_gt.csv.
+    Build feature-space DF for all episodes and all frames in GT.
 
-    - feature_extractor_fn: function(frame_path, feature_list) -> dict
-    - feature_list: SIM1_VISUAL_FEATURES, etc.
-    - gt_df: all_episodes_ground_truth_dataframe
-    - characters: SIM1_CHARACTERS / SIM2_CHARACTERS
-    - video_name_to_gt: dict mapping episode_name -> video ID
-    - frames_base_dir: base folder containing {episode_name}-frames
+    - Computes all requested features from scratch
+    - Shows a tqdm progress bar per episode
     """
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    # Initialize DF from GT
+    feature_df = gt_df.copy()
+    feature_df = feature_df[["Video", "Frame_number", "Timestamp"] + characters]
+    feature_df["frame"] = "frame" + feature_df["Frame_number"].astype(str) + ".jpg"
 
     all_records = []
-    skipped_frames = []
 
     for episode_name, video_id in video_name_to_gt.items():
         ep_gt = gt_df[gt_df["Video"] == video_id].copy()
-
         frames_dir = os.path.join(frames_base_dir, f"{episode_name}-frames")
 
         if not os.path.exists(frames_dir):
-            print(f"[Warning] Frames dir missing: {frames_dir}")
-            skipped_frames.extend(list(ep_gt["Frame_number"]))
+            print(f"[Warning] Missing frames dir: {frames_dir}")
             continue
 
-        for idx, row in ep_gt.iterrows():
+        # tqdm progress bar per episode
+        for _, row in tqdm(ep_gt.iterrows(), total=len(ep_gt), desc=f"{episode_name}", ncols=100):
             frame_file = f"frame{row['Frame_number']}.jpg"
             frame_path = os.path.join(frames_dir, frame_file)
 
-            if not os.path.exists(frame_path):
-                skipped_frames.append(row["Frame_number"])
-                continue
-
             feats = feature_extractor_fn(frame_path, feature_list)
+
             record = {
                 "Video": row["Video"],
                 "Frame_number": row["Frame_number"],
                 "Timestamp": row["Timestamp"],
-                "frame": frame_file
+                "frame": frame_file,
             }
-
-            # Append features
             record.update(feats)
 
             # Append labels for characters
@@ -126,16 +123,11 @@ def build_feature_space_df(
     merged_df = pd.DataFrame(all_records)
 
     # Save CSV
-    out_dir = "../data/processed/feature_spaces/"
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "visual_sim1.csv")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     merged_df.to_csv(out_path, index=False)
+    print(f"\n[Feature space] saved {merged_df.shape} -> {out_path}")
 
-    print(f"[Feature space] SIM1 saved {merged_df.shape} -> {out_path}")
-    if skipped_frames:
-        print(f"[Warning] Skipped {len(skipped_frames)} frames: {skipped_frames[:10]} ...")
-    return merged_df, skipped_frames
-
+    return merged_df
 
 #-----------------------------------
 # FEATURE SPACE TRAIN-TEST SPLIT
