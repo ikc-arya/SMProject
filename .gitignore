@@ -3,6 +3,8 @@ SIM12 Ground Truth.zip
 muppets-gt-2025wt.zip
 
 .DS_Store
+/__pycache__/
+utils/__pycache__/*.pyc
 __pycache__/
 *.pyc
 

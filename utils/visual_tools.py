@@ -173,90 +173,125 @@ def frog_eye_pattern(frame_info, dry_run=False):
     if dry_run:
         return {
             "eye_blob_count": None,
-            "eye_horizontal_align": None
+            "eye_horizontal_align": None,
+            "eye_pupil_contrast": None,
         }
 
     hsv = frame_info["hsv"]
+    gray = frame_info["gray"]
 
-    # green region
+    # --- Green vicinity (frog skin)
     green_mask = (
         (hsv[:, :, 0] >= 35) & (hsv[:, :, 0] <= 85) &
-        (hsv[:, :, 1] > 50)
+        (hsv[:, :, 1] > 50) &
+        (hsv[:, :, 2] > 50)
+    ).astype(np.uint8)
+
+    # Dilate green region to define local neighborhood
+    green_neighborhood = cv2.dilate(
+        green_mask,
+        np.ones((9, 9), np.uint8),
+        iterations=1
     )
 
-    # white regions inside green (eyes)
-    v = hsv[:, :, 2]
-    white = (v > 200) & green_mask
-    white = white.astype("uint8") * 255
+    # --- White sclera only if near green
+    sclera_mask = (
+        (hsv[:, :, 1] < 40) &      # low saturation
+        (hsv[:, :, 2] > 180) &     # high value
+        (green_neighborhood > 0)   # must be near green
+    ).astype(np.uint8) * 255
+
+    # Clean small noise
+    sclera_mask = cv2.morphologyEx(
+        sclera_mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)
+    )
 
     contours, _ = cv2.findContours(
-        white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        sclera_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
 
-    valid = []
-    centers = []
+    eye_centers = []
+    pupil_contrasts = []
 
     for c in contours:
         area = cv2.contourArea(c)
-        if area < 20:
+        if area < 80:
             continue
-        valid.append(c)
+
+        x, y, w, h = cv2.boundingRect(c)
+        roi_gray = gray[y:y+h, x:x+w]
+        roi_hsv = hsv[y:y+h, x:x+w]
+
+        if roi_gray.size == 0:
+            continue
+
+        # --- Black pupil detection inside white sclera
+        black_mask = (
+            (roi_hsv[:, :, 2] < 60) &     # very dark
+            (roi_hsv[:, :, 1] < 80)       # not saturated (true black)
+        )
+
+        black_frac = black_mask.mean()
+
+        # Reject white blobs without a black pupil
+        if black_frac < 0.02:
+            continue
+
+        # pupil contrast metric (robust)
+        pupil_contrast = roi_gray.mean() - np.percentile(roi_gray, 5)
+        pupil_contrasts.append(pupil_contrast)
+
         M = cv2.moments(c)
         if M["m00"] != 0:
-            centers.append((M["m10"] / M["m00"], M["m01"] / M["m00"]))
+            cx = M["m10"] / M["m00"]
+            cy = M["m01"] / M["m00"]
+            eye_centers.append((cx, cy))
 
-    # horizontal alignment score (Kermit eyes)
     horiz_align = 0.0
-    if len(centers) >= 2:
-        ys = [c[1] for c in centers]
-        horiz_align = 1 / (1 + np.std(ys))
+    if len(eye_centers) >= 2:
+        ys = [c[1] for c in eye_centers]
+        horiz_align = 1.0 / (1.0 + np.std(ys))
 
     return {
-        "eye_blob_count": len(valid),
-        "eye_horizontal_align": horiz_align
+        "eye_blob_count": len(eye_centers),
+        "eye_horizontal_align": horiz_align,
+        "eye_pupil_contrast": np.mean(pupil_contrasts) if pupil_contrasts else 0.0,
     }
 
 
-def brown_rhythm(frame_info, dry_run=False, patch_size=16, max_lag=10):
-    """
-    Rhythm detection of brown patches in the frame.
-    Returns mean autocorrelation across lags.
-    """
+def brown_rhythm(frame_info, dry_run=False, patch_size=16, max_lag=12):
     if dry_run:
         return {"brown_rhythm": None}
 
     hsv = frame_info["hsv"]
 
-    # Brown mask
-    mask = (
-        (hsv[:, :, 0] >= 10) & (hsv[:, :, 0] <= 25) &
-        (hsv[:, :, 1] > 50) &
-        (hsv[:, :, 2] > 50)
+    # Orange–brown range (from image)
+    brown_mask = (
+        (hsv[:, :, 0] >= 8) & (hsv[:, :, 0] <= 30) &
+        (hsv[:, :, 1] >= 60) &
+        (hsv[:, :, 2] >= 50)
     ).astype(np.uint8)
 
-    h, w = mask.shape
+    h, w = brown_mask.shape
     n_h = h // patch_size
     n_w = w // patch_size
 
-    # Sum brown pixels per patch (row-wise)
-    patch_sums = []
+    # Sum per row of patches (texture rhythm)
+    row_energy = []
     for i in range(n_h):
-        for j in range(n_w):
-            patch = mask[i*patch_size:(i+1)*patch_size,
-                         j*patch_size:(j+1)*patch_size]
-            patch_sums.append(patch.sum())
+        row = brown_mask[i*patch_size:(i+1)*patch_size, :]
+        row_energy.append(row.mean())
 
-    patch_sums = np.array(patch_sums)
-    patch_sums = patch_sums - patch_sums.mean()
+    row_energy = np.array(row_energy)
+    row_energy -= row_energy.mean()
 
-    # Autocorrelation for lags 1..max_lag
     acorrs = []
-    for k in range(1, min(max_lag, len(patch_sums))):
-        ac = np.mean(patch_sums[:-k] * patch_sums[k:])
-        acorrs.append(ac)
+    for k in range(1, min(max_lag, len(row_energy))):
+        acorrs.append(np.mean(row_energy[:-k] * row_energy[k:]))
 
-    rhythm_score = np.mean(acorrs) if acorrs else 0.0
-    return {"brown_rhythm": rhythm_score}
+    return {
+        "brown_rhythm": float(np.mean(acorrs)) if acorrs else 0.0
+    }
 
 VISUAL_FEATURES = {
     "dominant_color": dominant_color,
