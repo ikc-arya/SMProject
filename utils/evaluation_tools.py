@@ -38,10 +38,18 @@ def evaluate_multiclass(
     )
 
     for i, char in enumerate(characters, start=1):
-        y_true = y_true_df[char].values
-        y_pred = y_pred_df[f"{char}_present"].values
+        #y_true = y_true_df[char].values
+        #y_pred = y_pred_df[f"{char}_present"].values
 
-        cm = confusion_matrix(y_true, y_pred)
+        y_true = y_true_df[char].values
+        # bunary predict (for confusion matrix)
+        y_pred_bin = y_pred_df[f"{char}_present"].values
+        # score (for PR/ROC/MAP)
+        score_col = f"{char}_score"
+        y_score = y_pred_df[score_col].values if score_col in y_pred_df.columns else y_pred_bin
+
+        #cm = confusion_matrix(y_true, y_pred)
+        cm = confusion_matrix(y_true, y_pred_bin)
         cm_text = np.array([[f"{v}" for v in row] for row in cm])
 
         fig_cm.add_trace(
@@ -61,14 +69,22 @@ def evaluate_multiclass(
         fig_cm.update_yaxes(tickangle=270, row=1, col=i)
 
         # ---- PR / ROC overlay prep ----
-        precision, recall, _ = precision_recall_curve(y_true, y_pred)
-        avg_prec = average_precision_score(y_true, y_pred)
+        #precision, recall, _ = precision_recall_curve(y_true, y_pred)
+        #avg_prec = average_precision_score(y_true, y_pred)
+
+        precision, recall, _ = precision_recall_curve(y_true, y_score)
+        avg_prec = average_precision_score(y_true, y_score)
+
+
         metrics_dict[char] = {"MAP": avg_prec}
         fig_pr_comb.add_trace(
             go.Scatter(x=recall, y=precision, mode="lines+markers", name=f"{char}")
         )
 
-        fpr, tpr, _ = roc_curve(y_true, y_pred)
+        #fpr, tpr, _ = roc_curve(y_true, y_pred)
+        fpr, tpr, _ = roc_curve(y_true, y_score)
+
+
         fig_roc_comb.add_trace(
             go.Scatter(x=fpr, y=tpr, mode="lines+markers", name=f"{char}")
         )
