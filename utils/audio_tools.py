@@ -241,3 +241,12 @@ def build_audio_feature_space_df(
     out.to_csv(out_csv_path, index=False)
     print(f"[audio feature space] saved {out.shape} -> {out_csv_path}")
     return out
+
+# -----------------------------
+# SIM2 FEATURE TOOLS
+# -----------------------------
+def rhythm_detection(audio_file):
+    '''
+    detect rhythm pattern, specifically for the Swedish Chef or 'Cook' with a distinct 
+    '''
+

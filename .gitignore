@@ -11,14 +11,10 @@ data/raw/
 
 # Extracted video frames
 data/processed/video/*-frames/*.jpg
-data/processed/preds/
-
-data/processed/feature_spaces/*.csv
-# keep visual_sim1.csv (already in repo)
-!data/processed/feature_spaces/visual_sim1.csv
 
 # Virtual environments
 env_muppets/
+env_mupppet/
 
 # Sample submission folder
 Sample Final hand-in/
