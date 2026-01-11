@@ -7,6 +7,8 @@ import colorsys
 import csv
 import pandas as pd
 import numpy as np
+from skimage.feature import local_binary_pattern, hog
+
 
 def parse_timestamp(ts):
     parts = ts.split(":")
@@ -327,8 +329,76 @@ def feat_optical_flow(prev_gray, curr_gray):
                              (np.abs(flow[...,1]).mean() + 1e-6))
     }
 
+# ---------------*******************--------------------
+# VISUAL FEATURE EXTRACTION - for SIM2 (fast, lecture 6+)
+# LBP (local texture) + HOG (shape) + Farneback flow (motion)
+# ---------------*******************--------------------
+
+def feat_lbp_hist(frame_info, dry_run=False, bins=32, radius=2, points=16):
+    """
+    LBP histogram with fixed bins.
+    Returns: {"lbp_0":..., "lbp_31":...}
+    """
+    if dry_run:
+        return {f"lbp_{i}": None for i in range(bins)}
+
+    gray = frame_info["gray"]
+    lbp = local_binary_pattern(gray, P=points, R=radius, method="uniform")
+
+    # Histogram
+    hist, _ = np.histogram(lbp.ravel(), bins=bins, range=(0, bins), density=True)
+    return {f"lbp_{i}": float(hist[i]) for i in range(bins)}
 
 
+def feat_hog(frame_info, dry_run=False,
+             orientations=9, pixels_per_cell=(16, 16), cells_per_block=(2, 2)):
+    """
+    HOG descriptor -> summarized into mean/std to keep it lightweight.
+    Returns: {"hog_mean":..., "hog_std":...}
+    """
+    if dry_run:
+        return {"hog_mean": None, "hog_std": None}
+
+    gray = frame_info["gray"]
+    vec = hog(
+        gray,
+        orientations=orientations,
+        pixels_per_cell=pixels_per_cell,
+        cells_per_block=cells_per_block,
+        block_norm="L2-Hys",
+        feature_vector=True,
+    )
+    return {
+        "hog_mean": float(np.mean(vec)),
+        "hog_std": float(np.std(vec)),
+    }
+
+
+def feat_farneback_flow(prev_gray, curr_gray):
+    """
+    Farneback optical flow summary: mean/std magnitude + horizontal/vertical ratio.
+    Returns: {"flow_mag_mean":..., "flow_mag_std":..., "flow_horiz_ratio":...}
+    """
+    flow = cv2.calcOpticalFlowFarneback(
+        prev_gray, curr_gray,
+        None, 0.5, 3, 15, 3, 5, 1.2, 0
+    )
+    mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+
+    horiz = np.abs(flow[..., 0]).mean()
+    vert = np.abs(flow[..., 1]).mean()
+
+    return {
+        "flow_mag_mean": float(mag.mean()),
+        "flow_mag_std": float(mag.std()),
+        "flow_horiz_ratio": float(horiz / (vert + 1e-6)),
+    }
+
+SIM2_VISUAL_FEATURES = {
+    "lbp32": feat_lbp_hist,   # returns lbp_0..lbp_31
+    "hog": feat_hog,          # returns hog_mean, hog_std
+    # flow is handled sequentially (needs prev frame), see extractor below
+}
 
 
 # to execute all feature functions and create feature space
@@ -357,5 +427,46 @@ def extract_visual_features_for_frame(frame_path, feature_list):
             raise ValueError(f"Unknown feature: {feat_name}")
         feat_vals = VISUAL_FEATURES[feat_name](frame_data)
         out.update(feat_vals)
+
+    return out
+
+def extract_visual_features_for_frame_sim2(prev_frame_path, frame_path, feature_list):
+    """
+    SIM2 extractor: supports sequential features (Farneback flow).
+    feature_list can contain: "lbp32", "hog", "flow"
+    Returns: dict with extracted features.
+    """
+    if not os.path.exists(frame_path):
+        raise FileNotFoundError(f"Missing frame: {frame_path}")
+
+    img = cv2.imread(frame_path)
+    if img is None:
+        raise ValueError(f"Could not read frame: {frame_path}")
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    frame_info = {"img": img, "gray": gray, "hsv": hsv}
+
+    out = {"frame": os.path.basename(frame_path)}
+
+    # --- non-sequential features ---
+    for feat_name in feature_list:
+        if feat_name in ("lbp32", "hog"):
+            feat_fn = SIM2_VISUAL_FEATURES[feat_name]
+            out.update(feat_fn(frame_info))
+        elif feat_name == "flow":
+            # sequential: needs prev frame
+            if prev_frame_path is None or not os.path.exists(prev_frame_path):
+                # first frame: define "no motion"
+                out.update({"flow_mag_mean": 0.0, "flow_mag_std": 0.0, "flow_horiz_ratio": 0.0})
+            else:
+                prev_img = cv2.imread(prev_frame_path)
+                if prev_img is None:
+                    out.update({"flow_mag_mean": 0.0, "flow_mag_std": 0.0, "flow_horiz_ratio": 0.0})
+                else:
+                    prev_gray = cv2.cvtColor(prev_img, cv2.COLOR_BGR2GRAY)
+                    out.update(feat_farneback_flow(prev_gray, gray))
+        else:
+            raise ValueError(f"Unknown SIM2 feature: {feat_name}")
 
     return out
