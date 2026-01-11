@@ -2,21 +2,23 @@
 SIM12 Ground Truth.zip
 muppets-gt-2025wt.zip
 
+.DS_Store
+__pycache__/
+*.pyc
+
 # Raw data (audio, video, cache)
 data/raw/
 
 # Extracted video frames
 data/processed/video/*-frames/*.jpg
+data/processed/preds/
+
+data/processed/feature_spaces/*.csv
+# keep visual_sim1.csv (already in repo)
+!data/processed/feature_spaces/visual_sim1.csv
 
 # Virtual environments
 env_muppets/
 
 # Sample submission folder
 Sample Final hand-in/
-
-# macOS
-.DS_Store
-
-# Python
-__pycache__/
-*.pyc
