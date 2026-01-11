@@ -11,7 +11,8 @@ import shutil
 import numpy as np
 import pandas as pd
 import librosa
-
+import parselmouth
+from tqdm import tqdm
 
 # -----------------------------
 # Helpers
@@ -245,8 +246,85 @@ def build_audio_feature_space_df(
 # -----------------------------
 # SIM2 FEATURE TOOLS
 # -----------------------------
-def rhythm_detection(audio_file):
-    '''
-    detect rhythm pattern, specifically for the Swedish Chef or 'Cook' with a distinct 
-    '''
 
+
+# 1) Per-episode extraction
+def extract_audio_features_from_wav(
+    wav_path: str,
+    sr: int = 22050,
+    fps: int = 25,
+    minf0: float = 50,
+    maxf0: float = 500,
+) -> Dict[str, np.ndarray]:
+    """
+    Compute frame-aligned audio features for the entire WAV.
+    Returns a dictionary containing:
+        - f0, f0_voiced, onset_strength, rhythm_strength
+        - plus global stats: f0_mean, f0_median, f0_std, tempo, tempogram_mean, onset_strength_avg
+    """
+    # --- load audio ---
+    y, _ = librosa.load(wav_path, sr=sr, mono=True)
+    hop_length = int(sr / fps)
+
+    # --- pitch features ---
+    snd = parselmouth.Sound(wav_path)
+    pitch = snd.to_pitch(time_step=1/fps, pitch_floor=minf0, pitch_ceiling=maxf0)
+    f0_values = pitch.selected_array["frequency"]
+    voiced = f0_values > 0
+    f0_voiced = voiced.astype(int)
+
+    f0_stats = {
+        "f0_mean": float(np.mean(f0_values[voiced])) if np.any(voiced) else 0.0,
+        "f0_median": float(np.median(f0_values[voiced])) if np.any(voiced) else 0.0,
+        "f0_std": float(np.std(f0_values[voiced])) if np.any(voiced) else 0.0,
+        "voiced_ratio": float(np.sum(voiced) / len(f0_values)) if len(f0_values) else 0.0,
+    }
+
+    # --- rhythm features ---
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
+    tempo, beats = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr)
+    tempogram = librosa.feature.tempogram(onset_envelope=onset_env, sr=sr, hop_length=hop_length)
+
+    rhythm_features = {
+        "tempo": float(tempo),
+        "tempogram_mean": float(np.mean(tempogram)),
+        "onset_strength_avg": float(np.mean(onset_env)),
+        "onset_strength": onset_env[:len(f0_values)],
+        "rhythm_strength": tempogram.mean(axis=0)[:len(f0_values)],
+    }
+
+    # --- combine all ---
+    audio_feat = {**f0_stats, **rhythm_features, "f0": f0_values, "f0_voiced": f0_voiced}
+    return audio_feat
+
+
+
+# 2) Frame-level accessor
+def extract_audio_features_for_frame(audio_feat: Dict[str, np.ndarray], frame_idx: int) -> Dict[str, float]:
+    """
+    Extract audio features for a single video frame index.
+    """
+    T = len(audio_feat["f0"])
+    if frame_idx >= T:
+        return {
+            "f0": np.nan,
+            "f0_voiced": 0,
+            "onset_strength": 0.0,
+            "rhythm_strength": 0.0,
+        }
+
+    return {
+        "f0": float(audio_feat["f0"][frame_idx]),
+        "f0_voiced": int(audio_feat["f0_voiced"][frame_idx]),
+        "onset_strength": float(audio_feat["onset_strength"][frame_idx]),
+        "rhythm_strength": float(audio_feat["rhythm_strength"][frame_idx]),
+    }
+
+
+# 3) Feature dictionary for registry
+SIM2_AUDIO_FEATURES = {
+    "f0": lambda frame_data: {"f0": frame_data["f0"]},
+    "f0_voiced": lambda frame_data: {"f0_voiced": frame_data["f0_voiced"]},
+    "onset_strength": lambda frame_data: {"onset_strength": frame_data["onset_strength"]},
+    "rhythm_strength": lambda frame_data: {"rhythm_strength": frame_data["rhythm_strength"]},
+}

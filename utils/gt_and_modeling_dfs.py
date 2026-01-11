@@ -3,8 +3,10 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from datetime import time, datetime
+from typing import Dict, List
 
 from utils import visual_tools as visualTools
+from utils import audio_tools as audioTools
 
 
 def format_gt_timestamp(ts):
@@ -181,3 +183,96 @@ def split_feature_space_df(feature_df, EPISODES, EPISODE_NAME_TO_VIDEO_ID):
     )
 
     return train_df, test_df
+
+
+
+
+#-----------------------------------
+# BUILD AUDIO FEATURE SPACE
+#-----------------------------------
+def build_audio_feature_space_df_sim2(
+    EPISODES: Dict[str, Dict],
+    EPISODE_NAME_TO_VIDEO_ID: Dict[str, int],
+    gt_df: pd.DataFrame,
+    character_cols: List[str],
+    out_csv_path: str = "../data/processed/feature_spaces/audio_sim2.csv",
+    audio_cache_dir: str = "../data/raw/_audio_cache",
+    sr: int = 22050,
+    fps: int = 25,
+    minf0: float = 50,
+    maxf0: float = 500,
+) -> pd.DataFrame:
+    """
+    Build frame-level audio feature-space for SIM2 characters by extracting features from .wav and mapping to GT frames.
+    Uses previously defined audio extraction functions:
+        - extract_audio_features_from_wav() -> get audio features
+        - extract_audio_features_for_frame() -> align em with GT
+    
+    Returns:
+        pd.DataFrame with columns: Video, Frame_number, Timestamp, audio_features..., [labels]
+    """
+    os.makedirs(audio_cache_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(out_csv_path), exist_ok=True)
+
+    all_rows = []
+
+    for episode_name, ep in EPISODES.items():
+        video_id = EPISODE_NAME_TO_VIDEO_ID[episode_name]
+        video_path = ep["path"]
+
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"Video not found: {video_path}")
+
+        # ---- audio cache path (CORRECT) ----
+        wav_path = os.path.join(audio_cache_dir, f"{episode_name}.wav")
+
+        # extract audio only if not cached
+        if not os.path.exists(wav_path):
+            audioTools.run_ffmpeg_extract_audio(
+                video_path=video_path,
+                out_wav_path=wav_path,
+                sr=sr
+            )
+
+        # extract full-audio features
+        audio_feat = audioTools.extract_audio_features_from_wav(
+            wav_path=wav_path,
+            sr=sr,
+            fps=fps,
+            minf0=minf0,
+            maxf0=maxf0
+        )
+
+        gt_ep = gt_df[gt_df["Video"] == video_id].copy()
+        gt_ep = gt_ep.sort_values("Frame_number")
+
+        n_frames = min(len(gt_ep), len(audio_feat["f0"]))
+        gt_ep = gt_ep.iloc[:n_frames]
+
+        for idx, row in tqdm(
+            gt_ep.iterrows(),
+            total=len(gt_ep),
+            desc=f"{episode_name} | audio",
+            ncols=100,
+        ):
+            feats = audioTools.extract_audio_features_for_frame(
+                audio_feat, frame_idx=idx
+            )
+
+            record = {
+                "Video": row["Video"],
+                "Frame_number": row["Frame_number"],
+                "Timestamp": row["Timestamp"],
+                **feats,
+            }
+
+            for c in character_cols:
+                record[c] = row[c]
+
+            all_rows.append(record)
+
+    feature_df = pd.DataFrame(all_rows)
+    feature_df.to_csv(out_csv_path, index=False)
+
+    print(f"[SIM2 audio feature space] saved {feature_df.shape} -> {out_csv_path}")
+    return feature_df
