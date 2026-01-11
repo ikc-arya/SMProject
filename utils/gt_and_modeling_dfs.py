@@ -129,6 +129,61 @@ def build_feature_space_df(
 
     return merged_df
 
+def build_feature_space_df_sequential(
+    feature_extractor_fn,
+    feature_list,
+    gt_df,
+    characters,
+    video_name_to_gt,
+    frames_base_dir="../data/processed/video",
+    out_path="../data/processed/feature_spaces/visual_sim2.csv"
+):
+    """
+    Sequential feature extraction (SIM2): passes prev_frame_path -> current_frame_path.
+    Needed for motion (optical flow).
+    """
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    all_records = []
+
+    for episode_name, video_id in video_name_to_gt.items():
+        ep_gt = gt_df[gt_df["Video"] == video_id].copy()
+        frames_dir = os.path.join(frames_base_dir, f"{episode_name}-frames")
+
+        if not os.path.exists(frames_dir):
+            print(f"[Warning] Missing frames dir: {frames_dir}")
+            continue
+
+        prev_frame_path = None
+
+        for _, row in tqdm(ep_gt.iterrows(), total=len(ep_gt), desc=f"{episode_name}", ncols=100):
+            frame_file = f"frame{row['Frame_number']}.jpg"
+            frame_path = os.path.join(frames_dir, frame_file)
+
+            feats = feature_extractor_fn(prev_frame_path, frame_path, feature_list)
+
+            record = {
+                "Video": row["Video"],
+                "Frame_number": row["Frame_number"],
+                "Timestamp": row["Timestamp"],
+                "frame": frame_file,
+            }
+            record.update(feats)
+
+            # labels
+            for char in characters:
+                record[char] = row[char]
+
+            all_records.append(record)
+
+            prev_frame_path = frame_path
+
+    merged_df = pd.DataFrame(all_records)
+    merged_df.to_csv(out_path, index=False)
+    print(f"\n[Feature space SIM2] saved {merged_df.shape} -> {out_path}")
+    return merged_df
+
+
 #-----------------------------------
 # FEATURE SPACE TRAIN-TEST SPLIT
 #-----------------------------------
